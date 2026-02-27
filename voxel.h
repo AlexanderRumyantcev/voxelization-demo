@@ -4,8 +4,6 @@
 #include "raylib.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-#include <assert.h>
 #include <stdbool.h>
 
 /* =========================================================
@@ -41,11 +39,13 @@ typedef struct vxlist {
 
 /**
  * @brief Варианты разрешения сетки вокселей.
+ *
+ * Определяет количество вокселей в сетке.
  */
 typedef enum {
-    low    = 125,    /**< 5x5x5     =    125 вокселей. */
-    middle = 15625,  /**< 25x25x25  = 15625 вокселей. */
-    hight  = 125000, /**< 50x50x50  = 125000 вокселей. */
+    low    = 125,    /**< Низкое разрешение:    5×5×5   =    125 вокселей. */
+    middle = 15625,  /**< Среднее разрешение:  25×25×25 = 15 625 вокселей. */
+    hight  = 125000, /**< Высокое разрешение:  50×50×50 = 125 000 вокселей. */
 } mesh_resolution;
 
 /* =========================================================
@@ -53,11 +53,23 @@ typedef enum {
  * ========================================================= */
 
 /**
- * @brief Добавляет элемент в конец динамического массива.
+ * @brief Добавляет элемент @p item в конец динамического массива @p arr.
  *
- * При необходимости удваивает ёмкость через realloc и обнуляет
- * новую часть буфера, чтобы предотвратить чтение мусорных указателей.
+ * При необходимости удваивает ёмкость массива через realloc.
+ * Требует, чтобы у структуры были поля: items, count, capacity.
  */
+/*
+#define da_append(arr, item)                                                 \
+    do {                                                                     \
+        if ((arr)->count >= (arr)->capacity) {                             \
+            (arr)->capacity = (arr)->capacity == 0 ? 1 : (arr)->capacity*2;                                            \
+            (arr)->items = realloc((arr)->items,                             \
+                                   (arr)->capacity * sizeof((arr)->items[0]));\
+            assert((arr)->items != NULL);                                    \
+        }                                                                    \
+        (arr)->items[(arr)->count++] = (item);                               \
+    } while (0)
+*/
 #define da_append(arr, item)                                                      \
     do {                                                                          \
         if ((arr)->count >= (arr)->capacity) {                                    \
@@ -78,40 +90,200 @@ typedef enum {
  *  Глобальные переменные (границы модели после парсинга)
  * ========================================================= */
 
+/** Максимальная координата X всех вершин модели. */
 extern float x_max;
+/** Минимальная координата X всех вершин модели. */
 extern float x_min;
+/** Максимальная координата Y всех вершин модели. */
 extern float y_max;
+/** Минимальная координата Y всех вершин модели. */
 extern float y_min;
+/** Максимальная координата Z всех вершин модели. */
 extern float z_max;
+/** Минимальная координата Z всех вершин модели. */
 extern float z_min;
-extern int   vert_count;
+
+/** Общее количество вершин, считанных из PLY-файла. */
+extern int vert_count;
 
 /* =========================================================
- *  Прототипы функций
+ *  Функции создания / удаления контейнеров
  * ========================================================= */
 
-Voxel    make_voxel(int cap, float size);
-vxlist   make_vxlist(int cap);
-void     freeContainer(vxlist *c);
+/**
+ * @brief Создаёт и инициализирует воксель.
+ *
+ * @param cap  Начальная вместимость массива вершин.
+ * @param size Длина ребра вокселя.
+ * @return Инициализированная структура Voxel.
+ */
+Voxel make_voxel(int cap, float size);
 
+/**
+ * @brief Создаёт и инициализирует список вокселей.
+ *
+ * @param cap Начальная вместимость массива вокселей.
+ * @return Инициализированная структура vxlist.
+ */
+vxlist make_vxlist(int cap);
+
+/**
+ * @brief Освобождает всю память, занятую списком вокселей.
+ *
+ * Освобождает внутренние массивы каждого вокселя,
+ * затем сам массив вокселей. Обнуляет счётчики.
+ *
+ * @param c Указатель на список вокселей.
+ */
+void freeContainer(vxlist *c);
+
+/* =========================================================
+ *  Парсинг PLY-файла
+ * ========================================================= */
+
+/**
+ * @brief Считывает вершины из PLY-файла и возвращает массив Vector3.
+ *
+ * Попутно заполняет глобальные переменные x_min/x_max, y_min/y_max,
+ * z_min/z_max и vert_count.
+ *
+ * @param filename Путь к PLY-файлу.
+ * @param verties  Указатель на массив (выделяется внутри функции).
+ * @return Указатель на массив вершин (необходимо освободить вызывающей стороной).
+ */
 Vector3 *verts_from_ply(char *filename, Vector3 *verties);
-void     normalize_verties(Vector3 *verties, float norm_factor);
 
-void     parallel_mesh(int voxel_num, vxlist *mesh_vox,
-                       float wall_w, float wall_h, float wall_l,
-                       float voxel_w, Vector3 start_pos);
-void     create_mesh(vxlist *mesh_vox, float cube_volume, int voxel_num,
-                     float parallel_x, float parallel_y, float parallel_z,
-                     float *voxel_w);
+/* =========================================================
+ *  Нормализация
+ * ========================================================= */
 
-bool     point_in_voxel(Voxel vx, Vector3 vert);
-void     ind_finder(vxlist *mesh, Vector3 *vert,
-                    float voxel_w, float parallel_x, float parallel_y,
-                    float parallel_z);
+/**
+ * @brief Нормализует координаты вершин в диапазон [0, norm_factor].
+ *
+ * После нормализации обновляет глобальные переменные min/max.
+ *
+ * @param verties     Массив вершин для изменения (in-place).
+ * @param norm_factor Масштаб нормализации (например, 5.0f).
+ */
+void normalize_verties(Vector3 *verties, float norm_factor);
 
-int      vxCompare(const void *a, const void *b);
-void     vx_swap(Voxel *a, Voxel *b);
-void     threeWayPartition(vxlist *arr, int low, int high, int *lt, int *gt);
-void     threeWayQuickSort(vxlist *arr, int low, int high);
+/* =========================================================
+ *  Построение сетки вокселей
+ * ========================================================= */
+
+/**
+ * @brief Заполняет список @p mesh_vox вокселями, образующими равномерную сетку.
+ *
+ * Воксели расставляются послойно: сначала по оси X, затем Y, затем Z.
+ *
+ * @param voxel_num  Общее количество вокселей.
+ * @param mesh_vox   Указатель на список, в который добавляются воксели.
+ * @param wall_w     Ширина охватывающего параллелепипеда (ось X).
+ * @param wall_h     Высота охватывающего параллелепипеда (ось Y).
+ * @param wall_l     Глубина охватывающего параллелепипеда (ось Z).
+ * @param voxel_w    Длина ребра одного вокселя.
+ * @param start_pos  Позиция центра первого вокселя (нижний-левый-передний угол).
+ */
+void parallel_mesh(int voxel_num, vxlist *mesh_vox,
+                   float wall_w, float wall_h, float wall_l,
+                   float voxel_w, Vector3 start_pos);
+
+/**
+ * @brief Пересоздаёт сетку вокселей с новым разрешением.
+ *
+ * Вычисляет размер ребра вокселя на основе объёма, строит сетку
+ * и записывает рассчитанный размер ребра в @p voxel_w.
+ *
+ * @param mesh_vox    Указатель на список вокселей (перезаписывается).
+ * @param cube_volume Объём охватывающего параллелепипеда.
+ * @param voxel_num   Желаемое количество вокселей.
+ * @param parallel_x  Ширина параллелепипеда (ось X).
+ * @param parallel_y  Высота параллелепипеда (ось Y).
+ * @param parallel_z  Глубина параллелепипеда (ось Z).
+ * @param voxel_w     [out] Рассчитанный размер ребра вокселя.
+ */
+void create_mesh(vxlist *mesh_vox, float cube_volume, int voxel_num,
+                 float parallel_x, float parallel_y, float parallel_z,
+                 float *voxel_w);
+
+/* =========================================================
+ *  Вокселизация (определение принадлежности вершин вокселям)
+ * ========================================================= */
+
+/**
+ * @brief Проверяет, находится ли вершина @p vert внутри вокселя @p vx.
+ *
+ * @param vx   Воксель для проверки.
+ * @param vert Проверяемая вершина.
+ * @return true, если вершина внутри вокселя; false — иначе.
+ */
+bool point_in_voxel(Voxel vx, Vector3 vert);
+
+/**
+ * @brief Распределяет вершины модели по вокселям сетки.
+ *
+ * Для каждой вершины вычисляет индекс в одномерном массиве вокселей
+ * по формуле i·(nx·ny) + j·ny + k и добавляет вершину в соответствующий воксель.
+ *
+ * @param mesh       Указатель на сетку вокселей.
+ * @param vert       Массив вершин модели.
+ * @param voxel_w    Размер ребра вокселя.
+ * @param parallel_x Ширина параллелепипеда (ось X).
+ * @param parallel_y Высота параллелепипеда (ось Y).
+ * @param parallel_z Глубина параллелепипеда (ось Z).
+ */
+void ind_finder(vxlist *mesh, Vector3 *vert,
+                float voxel_w, float parallel_x, float parallel_y, float parallel_z);
+
+/* =========================================================
+ *  Сортировка вокселей
+ * ========================================================= */
+
+/**
+ * @brief Сравнивает два вокселя по количеству содержащихся в них вершин.
+ *
+ * Используется как компаратор для qsort.
+ *
+ * @param a Указатель на первый воксель (const void *).
+ * @param b Указатель на второй воксель (const void *).
+ * @return  1, если count(a) > count(b);
+ *         -1, если count(a) < count(b);
+ *          0, если равны.
+ */
+int vxCompare(const void *a, const void *b);
+
+/**
+ * @brief Меняет два вокселя местами.
+ *
+ * @param a Указатель на первый воксель.
+ * @param b Указатель на второй воксель.
+ */
+void vx_swap(Voxel *a, Voxel *b);
+
+/**
+ * @brief Трёхстороннее разбиение (partition) для быстрой сортировки.
+ *
+ * Разбивает подмассив arr[low..high] на три части:
+ * меньше, равно и больше опорного элемента.
+ *
+ * @param arr  Указатель на список вокселей.
+ * @param low  Левая граница подмассива.
+ * @param high Правая граница подмассива.
+ * @param lt   [out] Левая граница «равной» зоны.
+ * @param gt   [out] Правая граница «равной» зоны.
+ */
+void threeWayPartition(vxlist *arr, int low, int high, int *lt, int *gt);
+
+/**
+ * @brief Трёхсторонняя быстрая сортировка вокселей по количеству вершин.
+ *
+ * После сортировки воксели с наибольшим количеством вершин
+ * находятся в конце массива.
+ *
+ * @param arr  Указатель на список вокселей.
+ * @param low  Левая граница сортируемого подмассива.
+ * @param high Правая граница сортируемого подмассива.
+ */
+void threeWayQuickSort(vxlist *arr, int low, int high);
 
 #endif /* VOXEL_H */
